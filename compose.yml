@@ -1,0 +1,115 @@
+services:
+
+  requests:
+    build:
+      context: ../ms-barriodigital-requests/barriodigitalrequests
+      dockerfile: Dockerfile
+
+    image: barriodigital/requests:ep1
+    container_name: barriodigital-requests
+
+    env_file:
+      - ../ms-barriodigital-requests/barriodigitalrequests/.env
+
+    environment:
+      SERVER_PORT: "8081"
+
+    expose:
+      - "8081"
+
+    restart: unless-stopped
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:8081/actuator/health | grep -q '\"status\":\"UP\"'"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+    networks:
+      - barriodigital-net
+
+
+  catalog:
+    build:
+      context: ../ms-barriodigital-catalog/barriodigitalcatalog
+      dockerfile: Dockerfile
+
+    image: barriodigital/catalog:ep1
+    container_name: barriodigital-catalog
+
+    env_file:
+      - ../ms-barriodigital-catalog/barriodigitalcatalog/.env
+
+    environment:
+      SERVER_PORT: "8082"
+
+    expose:
+      - "8082"
+
+    restart: unless-stopped
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:8082/actuator/health | grep -q '\"status\":\"UP\"'"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+    networks:
+      - barriodigital-net
+
+
+  bff:
+    build:
+      context: ../ms-barriodigital-bff/barriodigitalbff
+      dockerfile: Dockerfile
+
+    image: barriodigital/bff:ep1
+    container_name: barriodigital-bff
+
+    env_file:
+      - ../ms-barriodigital-bff/barriodigitalbff/.env
+
+    environment:
+      SERVER_PORT: "8080"
+      REQUESTS_SERVICE_URL: http://requests:8081
+      CATALOG_SERVICE_URL: http://catalog:8082
+
+    ports:
+      - "8080:8080"
+
+    depends_on:
+      requests:
+        condition: service_healthy
+      catalog:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:8080/actuator/health | grep -q '\"status\":\"UP\"'"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+    networks:
+      - barriodigital-net
+
+
+networks:
+  barriodigital-net:
+    driver: bridge
