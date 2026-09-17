@@ -1,69 +1,56 @@
-# BarrioDigital EP1 - Docker Compose
+# Docker Compose - BarrioDigital
 
-Este Compose levanta solo los componentes backend requeridos en la EP1:
+El archivo `compose.yml` se encuentra en la raíz de este repositorio y levanta los tres servicios backend incluidos en la entrega actual:
 
-- BFF: puerto público 8080
-- Requests: puerto interno 8081
-- Catalog: puerto interno 8082
+- `bff`: publica `8080:8080`.
+- `requests`: expone 8081 solo dentro de Docker.
+- `catalog`: expone 8082 solo dentro de Docker.
 
-Requests y Catalog NO publican puertos al host. El BFF se comunica con ellos por DNS interno de Docker (`requests` y `catalog`).
+Los servicios comparten la red bridge `barriodigital-net`.
 
-## Requisitos
-
-Cada servicio debe conservar su archivo `.env` real junto al `pom.xml`:
-
-- `ms-barriodigital-bff/barriodigitalbff/.env`
-- `ms-barriodigital-requests/barriodigitalrequests/.env`
-- `ms-barriodigital-catalog/barriodigitalcatalog/.env`
-
-Los `.env` no deben subirse a Git.
-
-## Arranque
-
-Desde `infra-barriodigital/apps`:
+## Inicio
 
 ```bash
-docker compose config
+cd /opt/barriodigital/infra-barriodigital
+docker compose config -q
 docker compose build
 docker compose up -d
 ```
 
-## Ver estado
+## Estado y logs
 
 ```bash
 docker compose ps
-docker compose logs -f bff
-docker compose logs -f requests
-docker compose logs -f catalog
+docker compose logs --tail=100 bff
+docker compose logs --tail=100 requests
+docker compose logs --tail=100 catalog
 ```
 
-## Pruebas rápidas
+## Healthcheck
 
 ```bash
 curl http://localhost:8080/actuator/health
 ```
 
-Requests y Catalog se validan mediante sus healthchecks internos y no quedan expuestos al host.
+Requests y Catalog se verifican mediante los healthchecks definidos en Compose.
+
+## Reconstrucción
+
+Todos los servicios:
+
+```bash
+docker compose up -d --build
+```
+
+Solo un servicio, por ejemplo BFF:
+
+```bash
+docker compose build bff
+docker compose up -d bff
+```
 
 ## Detener
 
 ```bash
 docker compose down
 ```
-
-## Reconstruir después de cambiar código
-
-```bash
-docker compose up -d --build
-```
-
-## Nota t3.micro
-
-Tres aplicaciones Spring Boot pueden quedar ajustadas en una t3.micro. Mantener swap habilitado en EC2 y revisar memoria con:
-
-```bash
-free -h
-docker stats
-```
-
-Si hay reinicios por memoria, subir temporalmente a t3.medium.
