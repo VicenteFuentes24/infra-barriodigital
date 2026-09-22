@@ -1,5 +1,21 @@
 services:
 
+  frontend:
+      build:
+        context: ../frontend-barriodigial
+        dockerfile: Dockerfile
+
+      image: barriodigital/frontend:ep2
+      container_name: barriodigital-frontend
+
+      ports:
+        - "80:80"
+
+      restart: unless-stopped
+
+      networks:
+        - barriodigital-net
+
   requests:
     build:
       context: ../ms-barriodigital-requests/barriodigitalrequests
