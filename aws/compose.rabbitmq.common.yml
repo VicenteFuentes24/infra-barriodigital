@@ -1,3 +1,4 @@
+
 services:
   rabbitmq:
     image: ${RABBITMQ_IMAGE:-rabbitmq:4.3.6-management}
@@ -31,7 +32,7 @@ services:
         bind:
           create_host_path: false
     healthcheck:
-      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms && rabbitmq-diagnostics -q check_port_connectivity"]
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms"]
       interval: 30s
       timeout: 30s
       retries: 8
