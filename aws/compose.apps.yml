@@ -1,0 +1,167 @@
+name: barriodigital-apps-aws
+
+x-runtime: &runtime
+  restart: unless-stopped
+  stop_grace_period: 45s
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  networks: [apps]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+x-jvm: &jvm
+  JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60 -XX:InitialRAMPercentage=10 -XX:MaxDirectMemorySize=64m -XX:+ExitOnOutOfMemoryError"
+
+services:
+  requests:
+    <<: *runtime
+    build: ../../ms-barriodigital-requests/barriodigitalrequests
+    image: ${REQUESTS_IMAGE:-barriodigital/requests:aws-local}
+    mem_limit: 768m
+    environment:
+      <<: *jvm
+      SERVER_PORT: "8081"
+      DB_URL: ${REQUESTS_DB_URL:?Define Requests Supabase JDBC URL with SSL}
+      DB_USERNAME: ${REQUESTS_DB_USERNAME:?Define Requests database user}
+      DB_PASSWORD: ${REQUESTS_DB_PASSWORD:?Define Requests database password}
+      JPA_DDL_AUTO: validate
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${DB_POOL_SIZE:-3}
+      RABBITMQ_ADDRESSES: ${RABBITMQ_ADDRESSES:?Define both private AMQP addresses}
+      RABBITMQ_USERNAME: ${REQUESTS_RABBITMQ_USERNAME:?Define Requests broker user}
+      RABBITMQ_PASSWORD: ${REQUESTS_RABBITMQ_PASSWORD:?Define Requests broker password}
+      RABBITMQ_VIRTUAL_HOST: barriodigital
+      RABBITMQ_HEALTH_ENABLED: "true"
+    expose: ["8081"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8081/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  catalog:
+    <<: *runtime
+    build: ../../ms-barriodigital-catalog/barriodigitalcatalog
+    image: ${CATALOG_IMAGE:-barriodigital/catalog:aws-local}
+    mem_limit: 640m
+    environment:
+      <<: *jvm
+      SERVER_PORT: "8082"
+      DB_URL: ${CATALOG_DB_URL:?Define Catalog Supabase JDBC URL with SSL}
+      DB_USERNAME: ${CATALOG_DB_USERNAME:?Define Catalog database user}
+      DB_PASSWORD: ${CATALOG_DB_PASSWORD:?Define Catalog database password}
+      JPA_DDL_AUTO: validate
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${DB_POOL_SIZE:-3}
+    expose: ["8082"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8082/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  bff:
+    <<: *runtime
+    build: ../../ms-barriodigital-bff/barriodigitalbff
+    image: ${BFF_IMAGE:-barriodigital/bff:aws-local}
+    mem_limit: 512m
+    environment:
+      <<: *jvm
+      SERVER_PORT: "8080"
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:?Define the existing Entra tenant}
+      AZURE_API_AUDIENCE: ${AZURE_API_AUDIENCE:?Define the existing API audience}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:?Define the HTTPS Amplify origin without trailing slash}
+      REQUESTS_SERVICE_URL: http://requests:8081
+      CATALOG_SERVICE_URL: http://catalog:8082
+      REPORT_SERVICE_URL: ${REPORT_SERVICE_URL:-http://report:8083}
+      AUDIT_SERVICE_URL: ${AUDIT_SERVICE_URL:-http://audit:8084}
+    # Only the BFF has an application-facing host port. Confirm API Gateway integration first.
+    # Default loopback is intentional. Set the EC2 private bind IP for the existing public HTTP integration.
+    ports: ["${BFF_BIND_ADDRESS:-127.0.0.1}:${BFF_PORT:-8080}:8080"]
+    depends_on:
+      requests: {condition: service_healthy}
+      catalog: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  notify:
+    <<: *runtime
+    build: ../../ms-barriodigital-notify/notify
+    image: ${NOTIFY_IMAGE:-barriodigital/notify:aws-local}
+    mem_limit: 768m
+    environment:
+      <<: *jvm
+      SERVER_PORT: "8087"
+      RABBITMQ_ADDRESSES: ${RABBITMQ_ADDRESSES:?Define both private AMQP addresses}
+      RABBITMQ_USERNAME: ${NOTIFY_RABBITMQ_USERNAME:?Define Notify broker user}
+      RABBITMQ_PASSWORD: ${NOTIFY_RABBITMQ_PASSWORD:?Define Notify broker password}
+      RABBITMQ_VIRTUAL_HOST: barriodigital
+      NOTIFY_STORAGE_DIR: /app/data
+      NOTIFY_MAX_ATTEMPTS: ${NOTIFY_MAX_ATTEMPTS:-3}
+      NOTIFY_RETRY_DELAY_MS: ${NOTIFY_RETRY_DELAY_MS:-1000}
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_FROM: ${SMTP_FROM:-no-reply@barriodigital.test}
+      SMTP_AUTH: "false"
+      SMTP_STARTTLS: "false"
+      SMTP_SSL: "false"
+    expose: ["8087"]
+    volumes: ["notify-data:/app/data"]
+    depends_on:
+      mailpit: {condition: service_healthy}
+    # Healthcheck is included in the Notify image, with no curl/wget dependency.
+
+  rabbitmq-admin:
+    <<: *runtime
+    build: ../../ms-barriodigital-rabbitmq-admin/ms-barriodigital-rabbitmq-admin
+    image: ${RABBITMQ_ADMIN_IMAGE:-barriodigital/rabbitmq-admin:aws-local}
+    mem_limit: 512m
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    environment:
+      <<: *jvm
+      SERVER_PORT: "8088"
+      SERVER_ADDRESS: 0.0.0.0
+      RABBITMQ_ADDRESSES: ${RABBITMQ_ADDRESSES:?Define both private AMQP addresses}
+      RABBITMQ_USERNAME: ${ADMIN_RABBITMQ_USERNAME:?Define Admin broker user}
+      RABBITMQ_PASSWORD: ${ADMIN_RABBITMQ_PASSWORD:?Define Admin broker password}
+      RABBITMQ_VIRTUAL_HOST: barriodigital
+      # Existing broker uses private AMQP 5672, not TLS 5671. No false TLS assumptions.
+      RABBITMQ_SSL_ENABLED: "false"
+      ADMIN_HTTP_USERNAME: ${ADMIN_HTTP_USERNAME:?Define a separate internal HTTP account}
+      ADMIN_HTTP_PASSWORD: ${ADMIN_HTTP_PASSWORD:?Define a separate HTTP password of at least 16 characters}
+    expose: ["8088"]
+
+  mailpit:
+    <<: *runtime
+    image: ${MAILPIT_IMAGE:-axllent/mailpit:v1.31.4}
+    mem_limit: 192m
+    environment:
+      MP_DATABASE: /data/mailpit.db
+      MP_MAX_MESSAGES: ${MAILPIT_MAX_MESSAGES:-1000}
+    volumes: ["mailpit-data:/data"]
+    expose: ["1025", "8025"]
+    ports: ["127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"]
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+networks:
+  # Private Docker bridge, NOT internal:true: services need outbound Supabase/Entra/RabbitMQ.
+  apps:
+    name: ${AWS_APPS_NETWORK_NAME:-barriodigital-apps-aws}
+    driver: bridge
+
+volumes:
+  notify-data:
+    name: ${NOTIFY_VOLUME_NAME:-barriodigital-aws-notify-data}
+  mailpit-data:
+    name: ${MAILPIT_VOLUME_NAME:-barriodigital-aws-mailpit-data}

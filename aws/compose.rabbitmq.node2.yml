@@ -1,0 +1,8 @@
+name: barriodigital-rabbitmq-aws-node2
+services:
+  rabbitmq:
+    hostname: rabbitmq-node2
+    environment:
+      RABBITMQ_NODENAME: rabbit@rabbitmq-node2
+      RABBITMQ_BIND_IP: ${RABBITMQ_NODE2_PRIVATE_IP:?Define node2 private IPv4}
+      ERL_EPMD_ADDRESS: ${RABBITMQ_NODE2_PRIVATE_IP:?Define node2 private IPv4}

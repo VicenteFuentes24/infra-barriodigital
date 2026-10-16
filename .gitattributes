@@ -1,0 +1,6 @@
+# AWS scripts/config must retain Linux line endings when maintained on Windows.
+aws/*.sh text eol=lf
+aws/*.py text eol=lf
+aws/*.yml text eol=lf
+aws/*.conf text eol=lf
+aws/tests/*.py text eol=lf

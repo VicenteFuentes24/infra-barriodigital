@@ -1,0 +1,46 @@
+services:
+  rabbitmq:
+    image: ${RABBITMQ_IMAGE:-rabbitmq:4.3.6-management}
+    user: "999:999"
+    network_mode: host
+    environment:
+      HOME: /var/lib/rabbitmq
+      RABBITMQ_USE_LONGNAME: "false"
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:?Define the existing bootstrap user}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?Define the existing bootstrap password}
+      RABBITMQ_DEFAULT_VHOST: barriodigital
+    extra_hosts:
+      - "rabbitmq-node1:${RABBITMQ_NODE1_PRIVATE_IP:?Define node1 private IPv4}"
+      - "rabbitmq-node2:${RABBITMQ_NODE2_PRIVATE_IP:?Define node2 private IPv4}"
+    volumes:
+      - type: bind
+        source: ${RABBITMQ_DATA_DIR:?Define an existing absolute data directory}
+        target: /var/lib/rabbitmq
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${RABBITMQ_COOKIE_FILE:?Use the existing shared cookie file outside Git}
+        target: /var/lib/rabbitmq/.erlang.cookie
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./rabbitmq.conf
+        target: /etc/rabbitmq/rabbitmq.conf
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms && rabbitmq-diagnostics -q check_port_connectivity"]
+      interval: 30s
+      timeout: 30s
+      retries: 8
+      start_period: 90s
+    restart: unless-stopped
+    stop_grace_period: 90s
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    mem_limit: 1536m
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}

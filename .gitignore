@@ -2,3 +2,14 @@
 .env.*
 !.env.example
 !.env.*.example
+# Private deployment material: templates are tracked, real credentials never are.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+.erlang.cookie
+*.erlang.cookie
+secrets/
+__pycache__/
+aws/.validation-*/
