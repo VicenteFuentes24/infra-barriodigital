@@ -1,5 +1,8 @@
 # infra-barriodigital
 
+RabbitMQ local para EP3/EP4 tiene una configuracion separada en `compose.rabbitmq.yml`.
+Ver [README-RabbitMQ.md](README-RabbitMQ.md) para inicio, topologia y validacion.
+
 Infraestructura Docker de los servicios backend incluidos en la EP1 de BarrioDigital.
 
 ## Servicios

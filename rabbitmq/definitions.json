@@ -1,0 +1,55 @@
+{
+  "vhosts": [
+    { "name": "barriodigital" }
+  ],
+  "exchanges": [
+    { "name": "cmd.direct", "vhost": "barriodigital", "type": "direct", "durable": true, "auto_delete": false, "internal": false, "arguments": {} },
+    { "name": "cmd.topic", "vhost": "barriodigital", "type": "topic", "durable": true, "auto_delete": false, "internal": false, "arguments": {} },
+    { "name": "cmd.dead.dlx", "vhost": "barriodigital", "type": "direct", "durable": true, "auto_delete": false, "internal": false, "arguments": {} }
+  ],
+  "queues": [
+    { "name": "q.cmd.email", "vhost": "barriodigital", "durable": true, "auto_delete": false, "arguments": { "x-queue-type": "classic" } },
+    { "name": "q.cmd.crew", "vhost": "barriodigital", "durable": true, "auto_delete": false, "arguments": { "x-queue-type": "classic" } },
+    { "name": "q.cmd.certificate", "vhost": "barriodigital", "durable": true, "auto_delete": false, "arguments": { "x-queue-type": "classic" } },
+    { "name": "q.cmd.email.dlq", "vhost": "barriodigital", "durable": true, "auto_delete": false, "arguments": { "x-queue-type": "classic" } },
+    { "name": "q.cmd.crew.dlq", "vhost": "barriodigital", "durable": true, "auto_delete": false, "arguments": { "x-queue-type": "classic" } },
+    { "name": "q.cmd.certificate.dlq", "vhost": "barriodigital", "durable": true, "auto_delete": false, "arguments": { "x-queue-type": "classic" } }
+  ],
+  "bindings": [
+    { "source": "cmd.direct", "vhost": "barriodigital", "destination": "q.cmd.email", "destination_type": "queue", "routing_key": "email.send", "arguments": {} },
+    { "source": "cmd.direct", "vhost": "barriodigital", "destination": "q.cmd.crew", "destination_type": "queue", "routing_key": "crew.ticket", "arguments": {} },
+    { "source": "cmd.direct", "vhost": "barriodigital", "destination": "q.cmd.certificate", "destination_type": "queue", "routing_key": "certificate.gen", "arguments": {} },
+    { "source": "cmd.topic", "vhost": "barriodigital", "destination": "q.cmd.email", "destination_type": "queue", "routing_key": "email.*", "arguments": {} },
+    { "source": "cmd.topic", "vhost": "barriodigital", "destination": "q.cmd.crew", "destination_type": "queue", "routing_key": "crew.#", "arguments": {} },
+    { "source": "cmd.topic", "vhost": "barriodigital", "destination": "q.cmd.certificate", "destination_type": "queue", "routing_key": "certificate.*", "arguments": {} },
+    { "source": "cmd.dead.dlx", "vhost": "barriodigital", "destination": "q.cmd.email.dlq", "destination_type": "queue", "routing_key": "q.cmd.email.dlq", "arguments": {} },
+    { "source": "cmd.dead.dlx", "vhost": "barriodigital", "destination": "q.cmd.crew.dlq", "destination_type": "queue", "routing_key": "q.cmd.crew.dlq", "arguments": {} },
+    { "source": "cmd.dead.dlx", "vhost": "barriodigital", "destination": "q.cmd.certificate.dlq", "destination_type": "queue", "routing_key": "q.cmd.certificate.dlq", "arguments": {} }
+  ],
+  "policies": [
+    {
+      "name": "cmd-email-dlx",
+      "vhost": "barriodigital",
+      "pattern": "^q\\.cmd\\.email$",
+      "apply-to": "queues",
+      "priority": 10,
+      "definition": { "dead-letter-exchange": "cmd.dead.dlx", "dead-letter-routing-key": "q.cmd.email.dlq" }
+    },
+    {
+      "name": "cmd-crew-dlx",
+      "vhost": "barriodigital",
+      "pattern": "^q\\.cmd\\.crew$",
+      "apply-to": "queues",
+      "priority": 10,
+      "definition": { "dead-letter-exchange": "cmd.dead.dlx", "dead-letter-routing-key": "q.cmd.crew.dlq" }
+    },
+    {
+      "name": "cmd-certificate-dlx",
+      "vhost": "barriodigital",
+      "pattern": "^q\\.cmd\\.certificate$",
+      "apply-to": "queues",
+      "priority": 10,
+      "definition": { "dead-letter-exchange": "cmd.dead.dlx", "dead-letter-routing-key": "q.cmd.certificate.dlq" }
+    }
+  ]
+}
