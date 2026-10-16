@@ -83,8 +83,11 @@ def ensure_empty_join_target(definitions, bootstrap_user):
     if definitions.get("global_parameters"):
         # RabbitMQ may export its generated cluster name and internal ID even on a fresh node.
         allowed = {"cluster_name", "internal_cluster_id"}
-        if any(p["name"] not in allowed for p in definitions["global_parameters"]):
-            raise DeploymentError("Node2 contains custom global parameters; operation refused.")
+        for p in definitions["global_parameters"]:
+            if p["name"] == "cluster_tags" and p.get("value") == []:
+                continue
+            if p["name"] not in allowed:
+                raise DeploymentError("Node2 contains custom global parameters; operation refused.")
 
 
 class Compose:
