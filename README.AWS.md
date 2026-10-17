@@ -1,28 +1,49 @@
 # BarrioDigital EP3/EP4: despliegue AWS reproducible
 
-## Alcance y estado
+## Alcance y estado de implementacion (17 de octubre de 2026)
 
-Preparacion de repositorios, NO despliegue ejecutado. Region us-east-1 y VPC
-10.0.0.0/16 existentes. No se ejecutan llamadas AWS, cambios de SG, commits ni push.
-Mantener los siete repositorios separados y sus versiones Java/Spring actuales.
-Los Compose locales y `rabbitmq/definitions.json` NO se reemplazan.
+**Despliegue ejecutado y probado en AWS Academy Learner Lab (us-east-1).**
+Este documento registra la arquitectura que se utilizo para BarrioDigital EP3/EP4,
+su estado observado y las instrucciones para reproducirla o recuperarla.
+No es un manual de aprovisionamiento automatico de EC2/VPC/API Gateway:
+esos recursos se crearon y configuraron desde AWS por separado.
 
-Arquitectura: Amplify/React -> API Gateway -> BFF -> Requests/Catalog -> Supabase.
-Requests -> RabbitMQ privado -> Notify -> Mailpit/PDF/tickets. RabbitMQ Admin es
-una API interna con Basic, no un endpoint del navegador. Report/Audit no se crean.
+| Elemento | Implementacion comprobada |
+| --- | --- |
+| Red | VPC `10.0.0.0/16`; comunicacion entre las EC2 mediante IP privadas |
+| Apps | EC2 `barriodigital-apps`, t3.large, IP privada `10.0.1.154`, Elastic IP `35.172.253.68` |
+| Apps/Compose | `aws/compose.apps.yml`: **BFF, Requests, Catalog, Notify, RabbitMQ Admin y Mailpit**; los seis servicios observados `healthy` |
+| RabbitMQ | EC2 `rabbitmq-node1` (`10.0.1.62`) y `rabbitmq-node2` (`10.0.2.151`), t3.small; RabbitMQ 4.3.6 en cluster |
+| Mensajeria | Vhost `barriodigital`; `cmd.direct`, `cmd.topic`, `cmd.dead.dlx`; tres colas principales, tres DLQ y nueve bindings |
+| Identidad | Microsoft Entra ID; frontend React + MSAL en AWS Amplify |
+| Entrada API | HTTP API Gateway `BarrioDigitalAPI`, ruta `ANY /api/{proxy+}` con JWT authorizer hacia el BFF |
+| Comprobacion funcional | Tramites creados/cambiados de estado, eventos consumidos por Notify (ACK de `certificate.gen` y `email.send`) y prueba aislada de enrutamiento a DLQ |
+| Recuperacion | Tras detener el laboratorio se iniciaron manualmente las tres EC2; Docker recupero los contenedores y se verificaron backend y AMQP |
 
-| Repositorio | Ya preparado | Ajuste AWS |
-| --- | --- | --- |
-| infra | Compose local, RabbitMQ y topologia central | Compose separados, scripts y plantillas AWS |
-| requests | Supabase, eventos AFTER_COMMIT, confirms/returns | Lista AMQP multinodo; HTTP/entidades intactos |
-| notify | ACK/NACK, retry, DLQ, ledger, PDF, tickets, Mailpit | Lista AMQP, health de imagen y volumen AWS |
-| rabbitmq-admin | addresses, Basic, validaciones, health interno | Solo documentacion/exclusiones; Java intacto |
-| bff | JWT Entra completo, scopes/roles, proxy configurable | URLs Docker en Compose; Java intacto |
-| catalog | Supabase, variables, Docker y health | Compose con schema validate; Java intacto |
-| frontend | MSAL y VITE_* | Documentar variables/build de Amplify; UI intacta |
+El frontend esta disponible en:
+`https://main.d4hq4m0hivkvs.amplifyapp.com/`.
+El endpoint de API Gateway utilizado es:
+`https://2b9x0ufr0e.execute-api.us-east-1.amazonaws.com/`.
+Una solicitud sin token a `/api/bff/me` devolvio HTTP 401; el frontend
+con sesion iniciada completo flujos funcionales contra el backend.
+La comprobacion HTTP explicita de aceptacion de un token valido se debe
+conservar como evidencia separada en la presentacion.
 
-Lista exacta de archivos, resultados y motivos: [informe](aws/CHANGES.md).
-Cada repositorio contiene tambien `README.AWS.md`.
+**No se debe confundir cluster con replicacion:** las seis colas son `classic`
+y estan alojadas en node1. La pertenencia de node2 al cluster **no** asegura
+alta disponibilidad de esas colas ante una caida de node1 ni quorum de metadata
+si queda un unico miembro disponible.
+
+### Codigo e infraestructura que se mantienen separados
+
+La carpeta `aws/` contiene los Compose y scripts de despliegue para este entorno.
+No reemplaza `compose.rabbitmq.yml`, `compose.yml` ni
+`rabbitmq/definitions.json`, que se conservan para uso local.
+Los siete repositorios siguen separados; las versiones reales y los historiales
+de GitHub deben verificarse de forma independiente antes de entregar.
+Los scripts nunca deben usarse para resetear un cluster existente por un fallo
+de inicio ni para modificar datos sin respaldo. Para el detalle historico de
+los archivos preparados, consultar [`aws/CHANGES.md`](aws/CHANGES.md).
 
 ## Requisitos y capacidad
 
@@ -51,8 +72,10 @@ Referencia: [tipos EC2](https://docs.aws.amazon.com/ec2/latest/instancetypes/gp.
 
 ## Clonar desde GitHub
 
-Antes de estos pasos, revisar y publicar MANUALMENTE cada repositorio desde el
-equipo de desarrollo. En cada nodo RabbitMQ solo hace falta infra:
+Los ejemplos siguientes sirven para reproducir el despliegue en nuevas EC2.
+En la instalacion actual los repositorios ya se encuentran clonados.
+Verificar los commits publicados antes de utilizar estos comandos;
+en cada nodo RabbitMQ solo se requiere infraestructura:
 
 ```bash
 mkdir -p ~/barriodigital-src
@@ -240,23 +263,48 @@ tolerancia a perdida de un nodo ni se cambian tipos de cola o estrategias de
 particion. Las opciones antiguas de particion Mnesia no solucionan esto en Khepri.
 Referencia: [metadata y clustering](https://www.rabbitmq.com/docs/metadata-store/clustering).
 
-## Management sin exposicion publica
+## RabbitMQ Management: acceso web protegido y alternativa SSH
 
-Desde el computador del operador, configurar RMQ_NODE1_SSH_HOST con el DNS/IP
-SSH actual, no con una dependencia fija del codigo:
+El servicio de Management en **node1** escucha en `127.0.0.1:15672`.
+Su puerto `15672` **no esta expuesto directamente** mediante el Security Group.
+Para facilitar la demostracion de EP4 se configuro, de forma separada de los
+Compose del repositorio, el contenedor `barriodigital-ngrok` en node1:
+
+- URL estable: `https://juror-rumor-revision.ngrok-free.dev/`.
+- Acceso HTTPS autenticado con Google OAuth y lista de correos autorizados;
+  despues es necesario el usuario y contrasena propios de RabbitMQ.
+- Contenedor de ngrok con `restart: unless-stopped`; su token y politica de
+  acceso son privados y **no se versionan en Git**.
+- La autenticacion por OAuth se observo en funcionamiento. **Queda pendiente**
+  probar expresamente el rechazo de una cuenta Google no autorizada y la
+  recuperacion de ngrok luego de un reinicio completo de node1.
+- No publicar `5672`, `15672`, cookies, credenciales de Management ni el
+  authtoken de ngrok en repositorios, capturas o diapositivas.
+
+Para diagnostico de ngrok **en node1**:
 
 ```bash
-ssh -N -L 15672:127.0.0.1:15672 ec2-user@"$RMQ_NODE1_SSH_HOST"
+sudo docker ps --filter name=barriodigital-ngrok
+sudo docker inspect -f 'Estado={{.State.Status}} Reinicios={{.RestartCount}}' barriodigital-ngrok
+sudo docker logs --since 5m --tail 30 barriodigital-ngrok
 ```
 
-Abrir http://localhost:15672 con la cuenta RabbitMQ existente. Para node2 usar
-puerto local 15673 y destino 127.0.0.1:15672 en su propia EC2.
-Si se necesita llave SSH, indicar `-i` con un archivo privado EXTERNO a Git.
-No abrir 15672/5672 a Internet ni modificar SG desde estos scripts.
+**Respaldo por SSH (si no funciona el acceso web):** desde un equipo con
+acceso autorizado y llave privada, el operador puede crear un tunel hacia
+node1 con su IP SSH publica actual (esa IP puede cambiar tras Stop/Start):
+
+```bash
+ssh -N -L 15672:127.0.0.1:15672 -i /ruta/privada/llave.pem ec2-user@IP_PUBLICA_ACTUAL_NODE1
+```
+
+Abrir `http://localhost:15672/`. No se debe agregar `15672` como puerto
+publico del SG para solucionar una falla del tunel.
 
 ## Desplegar las cinco aplicaciones
 
-En la EC2 apps con los repos hermanos clonados:
+En la EC2 apps, con los repos hermanos clonados. En el despliegue
+real la infraestructura quedo en `/opt/barriodigital/infra-barriodigital`
+y los `.env` reales se mantienen fuera de Git:
 
 ```bash
 cd ~/barriodigital-src/infra-barriodigital
@@ -288,59 +336,110 @@ que permanecen ejecutandose con health unhealthy. Revisarlos con ps/inspeccion.
 
 ## API Gateway, Amplify y entrada BFF
 
-El operador informa una Elastic IP historica de apps, pero la integracion HTTP
-publica de API Gateway todavia NO esta verificada. No se consulta ni cambia AWS.
-Antes del despliegue confirmar URI, puerto, metodo, stage, path /api, headers
-Authorization y OPTIONS/CORS. No crear VPC Link ni ALB en esta fase.
+**Integracion utilizada durante EP4, ya comprobada:**
 
-`BFF_BIND_ADDRESS` inicia en 127.0.0.1. Con la integracion HTTP publica existente,
-configurarlo con la IP PRIVADA de la interfaz EC2 o 0.0.0.0, y verificar el SG
-restringido manualmente. La Elastic IP pertenece a NAT de AWS, no a la interfaz
-del SO: no usarla como direccion de bind. Nunca publicar otros microservicios.
-El acceso directo al BFF sigue requiriendo JWT; una integracion publica por IP
-no garantiza por si sola que todo acceso provenga exclusivamente de API Gateway.
-Revisar esta limitacion y el tramo Gateway->EC2 antes de usar datos sensibles.
+- API: `BarrioDigitalAPI`, ID `2b9x0ufr0e`, HTTP API en `us-east-1`.
+- Ruta de aplicacion: `ANY /api/{proxy+}` con autorizador JWT (issuer/audience
+  correspondientes a Microsoft Entra ID). El preflight OPTIONS se atiende sin JWT.
+- Integracion HTTP publica configurada con el destino
+  `http://35.172.253.68:8080/api/{proxy}`; la Elastic IP de apps permanece
+  asociada tras Stop/Start.
+- El BFF escucha en el puerto 8080 de la EC2. El valor de
+  `BFF_BIND_ADDRESS` debe ser la IP **privada** de la interfaz EC2 (`10.0.1.154`
+  en esta instalacion) y no la Elastic IP publica (AWS aplica NAT).
+- `https://2b9x0ufr0e.execute-api.us-east-1.amazonaws.com/api/bff/me`
+  sin token respondio HTTP 401. La interfaz de Amplify completo flujos
+  autenticados; documentar aparte una respuesta HTTP 200 con JWT valido para
+  cubrir la demostracion formal del autorizador.
 
-Amplify conserva su aplicacion/configuracion existente. Variables y pasos en
-README.AWS.md del frontend. VITE_API_BASE_URL debe ser Gateway HTTPS con su stage
-si aplica, sin /api final; VITE_AZURE_REDIRECT_URI debe coincidir con el redirect
-SPA registrado. FRONTEND_ORIGIN del BFF debe coincidir con el origen Amplify.
-No se modifica Entra, no hay client secret y no se agregan credenciales Basic al navegador.
+**Consideracion de seguridad:** el BFF tambien puede ser alcanzable directamente
+mediante su puerto publico segun las reglas actuales del SG. El BFF vuelve a
+validar JWT, pero el hecho de usar API Gateway no prueba que toda solicitud
+publica llegue exclusivamente a traves del Gateway. No afirmar que los
+microservicios internos esten disponibles publicamente. Si se desea cerrar
+ese acceso directo, planificar otra arquitectura (p. ej., VPC Link/ALB) y
+probarla antes de una evaluacion; no cambiarla a ultima hora.
 
-## Comprobaciones operativas
+El frontend React + Vite esta desplegado en AWS Amplify:
+`https://main.d4hq4m0hivkvs.amplifyapp.com/`.
+Utiliza MSAL y variables `VITE_*` para tenant, registro de frontend, scope,
+redirect y URL de API Gateway. No incluir client secrets ni contrasenas en
+`VITE_*`, en README o en el navegador.
 
-Desde apps, estos comandos solo consultan estado/salud:
+Ni los scripts del repositorio ni los Compose aprovisionan las EC2, VPC,
+Security Groups, Entra, Amplify o API Gateway automaticamente.
 
-```bash
-docker compose --env-file aws/.env.apps -f aws/compose.apps.yml ps
-docker compose --env-file aws/.env.apps -f aws/compose.apps.yml exec -T requests wget -qO- http://localhost:8081/actuator/health
-docker compose --env-file aws/.env.apps -f aws/compose.apps.yml exec -T catalog wget -qO- http://localhost:8082/actuator/health
-docker compose --env-file aws/.env.apps -f aws/compose.apps.yml exec -T bff wget -qO- http://localhost:8080/api/bff/health
-docker compose --env-file aws/.env.apps -f aws/compose.apps.yml exec -T notify java -cp /app/health HealthCheck
-docker compose --env-file aws/.env.apps -f aws/compose.apps.yml exec -T rabbitmq-admin java -cp /app/healthcheck HealthCheck
-```
+## Comprobaciones operativas y evidencia de EP4
 
-Mailpit UI via SSH: `ssh -N -L 8025:127.0.0.1:8025 ec2-user@"$APPS_SSH_HOST"`.
-Abrir http://localhost:8025. Para una inspeccion del volumen Notify, desde apps:
+### Aplicaciones (EC2 `barriodigital-apps`)
 
-```bash
-docker compose --env-file aws/.env.apps -f aws/compose.apps.yml exec -T notify find /app/data -type f
-```
-
-No publicar contenidos de PDF/tickets/ledger, pueden incluir datos personales.
-Para acceder privadamente a Admin desde Thunder Client, obtener su IP actual
-en apps (solo es diagnostico; no guardar esta IP en configuraciones):
+Ejecutar en la EC2 Apps:
 
 ```bash
-ADMIN_CONTAINER=$(docker compose --env-file aws/.env.apps -f aws/compose.apps.yml ps -q rabbitmq-admin)
-docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$ADMIN_CONTAINER"
+cd /opt/barriodigital/infra-barriodigital
+sudo docker compose --env-file aws/.env.apps -f aws/compose.apps.yml ps -a
+curl -sS -o /dev/null -w 'BFF HTTP %{http_code}\n' http://10.0.1.154:8080/actuator/health
+sudo docker compose --env-file aws/.env.apps -f aws/compose.apps.yml logs --since=20m --tail=100 notify
 ```
 
-Con esa IP como ADMIN_CONTAINER_IP, desde el PC:
-`ssh -N -L 18088:"$ADMIN_CONTAINER_IP":8088 ec2-user@"$APPS_SSH_HOST"`.
-Thunder usa http://localhost:18088 y su cuenta Basic interna; mutaciones requieren
-X-Admin-Request: true. El tunel no publica el puerto 8088 en EC2. Ver README
-original de Admin para contratos y nombres permitidos. No manipular recursos cmd.*.
+Tras el reinicio completo del laboratorio se observaron seis contenedores
+`healthy` y BFF HTTP 200. Los logs de Notify registraron eventos finalizados:
+`ACK command=certificate.gen ... result=completed` y
+`ACK command=email.send ... result=completed`.
+
+### Cluster RabbitMQ y topologia (en node1)
+
+```bash
+sudo docker ps --format 'table {{.Names}}\t{{.Status}}'
+sudo docker exec barriodigital-rabbitmq-aws-node1-rabbitmq-1 rabbitmqctl cluster_status
+sudo docker exec barriodigital-rabbitmq-aws-node1-rabbitmq-1 rabbitmqctl -q -p barriodigital list_queues --local name state messages
+```
+
+En la UI Management, comprobar:
+
+1. **Overview -> Nodes**: `rabbit@rabbitmq-node1` y `rabbit@rabbitmq-node2`.
+2. **Queues and Streams**: `q.cmd.email`, `q.cmd.crew`, `q.cmd.certificate`
+   y sus respectivas `.dlq`, todas en estado `running`.
+3. **Exchanges**: `cmd.direct` y `cmd.topic`, mas `cmd.dead.dlx` para errores.
+4. **Bindings**: tres claves exactas para `cmd.direct`, tres patrones para
+   `cmd.topic` y tres rutas hacia las DLQ desde `cmd.dead.dlx`.
+
+Las capturas de pantalla de estas vistas respaldan la demostracion. Que la
+cola este vacia (cero mensajes) despues de consumir correctamente es normal.
+Una captura de colas existentes **no sustituye** una prueba de DLQ: se realizo
+una prueba controlada con colas temporales y se comprobo la llegada del mensaje
+a su DLQ, seguida de la eliminacion de recursos de prueba.
+
+### RabbitMQ Admin
+
+API REST interna en el contenedor `rabbitmq-admin`, Basic Auth separada de AMQP
+y encabezado `X-Admin-Request: true` para mutaciones. En AWS se ejecutaron
+11 comprobaciones satisfactorias de health, 401, 403, 409, creacion/consulta
+de cola, exchange y binding, y eliminacion (HTTP 204). Se usaron recursos
+temporales, sin alterar `cmd.*` o `q.cmd.*`.
+
+### Limite de la demostracion sin SSH
+
+La consola AWS, Amplify, Entra y RabbitMQ Management via ngrok se pueden
+mostrar por navegador. Sin embargo, la ejecucion real de `docker compose`
+**no queda demostrada solo con ver EC2 o RabbitMQ Management**. Para EP4
+se debe conservar una captura o video autentico de la ejecucion y del estado
+Compose de los nodos. Si el docente exige ejecutarlo en vivo, preparar un
+mecanismo de acceso remoto autorizado; no simular su salida en diapositivas.
+
+### Recuperacion luego de AWS Academy Learner Lab
+
+Al ejecutar `End Lab`, las tres EC2 quedaron detenidas. Luego de `Start Lab`
+**fue necesario encender manualmente** node1, node2 y Apps desde EC2 -> Instances.
+Una vez iniciadas, Docker (`enabled`) recupero los servicios definidos con
+`restart: unless-stopped`. Se comprobo BFF HTTP 200, ambas conexiones AMQP y
+procesamiento posterior a la recuperacion. Las IP publicas de los nodos
+RabbitMQ pueden cambiar; las direcciones **privadas** internas usadas por
+las aplicaciones se conservaron en esas pruebas. Las EC2 conservan sus datos
+al detenerse, pero no al terminarlas/eliminar sus volumenes.
+
+La recuperacion automatica de ngrok **despues de apagar node1** debe volver
+a verificarse explicitamente; hasta entonces no presentarla como probada.
 
 ## Pruebas y limites de validacion
 
@@ -359,89 +458,61 @@ Maven en cada carpeta interna: `./mvnw -B -ntp clean package`
 (Windows: `.\mvnw.cmd -B -ntp clean package`). Frontend: `npm ci` y `npm run build`.
 Los resultados realmente ejecutados y limitaciones estan en `aws/CHANGES.md`.
 
-Pendiente en AWS, marcar solo al ejecutarlo:
+### Checklist de validacion real
 
-- [ ] Confirmar API Gateway HTTP publico actual, URI/stage/path/CORS/Authorization y bind BFF.
-- [ ] Verificar manualmente SG: 4369/25672 entre nodos; 5672 solo desde apps; 15672 sin Internet; SSH restringido.
-- [ ] Verificar DNS extra_hosts, cookie existente y UID/GID; no hay broker duplicado ni datos sin respaldo.
-- [ ] Arrancar ambos nodos, unir node2 vacio y obtener cluster_status con ambos running, sin alarmas/particiones.
-- [ ] Verificar 3 exchanges, 6 colas classic, 9 bindings, 3 politicas y vhost original, sin redeclaracion.
-- [ ] Validar acceso AMQP privado desde apps y permisos de las cuentas; salida SSL Supabase y Entra/JWK.
-- [ ] Verificar las cinco aplicaciones healthy, Mailpit listo y puertos internos no publicados.
-- [ ] Desde Amplify: login existente, me con JWT+scope, 401 sin JWT y 403 con rol/scope insuficiente.
-- [ ] Mantener ownership Cliente, acceso Operador/Admin y permisos de Catalog actuales.
-- [ ] Crear tramite REAL con procedimiento existente: persistencia + certificate.gen posterior al commit.
-- [ ] Comprobar ADMITIDO/email, EN_TERRENO/ticket y RESUELTO/email+PDF; invalidas no publican.
-- [ ] Verificar ACK, reintentos limitados, NACK y DLQ solo con pruebas aisladas, no inyectar payload invalido en produccion.
-- [ ] Reiniciar Notify de forma controlada y comprobar persistencia/idempotencia, sin borrar volumen.
-- [ ] Medir memoria, CPU creditos y disco. Realizar pruebas de fallo solo en entorno de ensayo con respaldo.
+- [x] Confirmar integracion Gateway -> BFF, frontend Amplify y rechazo de una solicitud sin JWT (HTTP 401).
+- [x] Verificar dos nodos RabbitMQ unidos, ambos running, y acceso AMQP desde Apps.
+- [x] Verificar tres exchanges, seis colas `classic`, nueve bindings y politicas/rutas DLQ.
+- [x] Verificar cinco microservicios + Mailpit `healthy` en EC2 Apps.
+- [x] Crear y actualizar solicitudes reales; procesar eventos de Notify y revisar ACK.
+- [x] Comprobar el recorrido a una DLQ mediante recursos temporales aislados.
+- [x] Probar RabbitMQ Admin REST en AWS: 11 de 11 operaciones esperadas.
+- [x] Detener/reiniciar las instancias y comprobar recuperacion funcional del backend.
+- [x] Acceder a RabbitMQ Management mediante ngrok y autenticacion Google.
+- [ ] Documentar respuesta HTTP exitosa con JWT valido y prueba de rechazo por token invalido.
+- [ ] Guardar captura o grabacion de `docker compose` ejecutado en cada nodo RabbitMQ.
+- [ ] Confirmar rechazo de una cuenta Google no autorizada en ngrok y recuperacion tras reinicio de node1.
+- [ ] Revisar Security Groups reales y documentar permisos/alcance con capturas.
+- [ ] Comprobar los commits de GitHub, el `.gitignore` y la ausencia de secretos publicados o en historial.
+- [ ] Confirmar backups de volumenes y procedimiento de recuperacion de datos antes de pruebas destructivas.
 
-No ejecutar RequestRabbitBrokerIT en el broker compartido con datos o Notify:
-su contrato exige cola certificate vacia y consume el mensaje de prueba. Notify/
-Admin tienen pruebas opt-in aisladas que necesitan Management y servicios reales;
-revisar sus READMEs. No afirmar HA por una simple reconexion a otro nodo.
+No ejecutar pruebas de integracion destructivas sobre el broker con colas de
+produccion. Usar colas temporales, aislamiento y credenciales de minimo
+privilegio. Los resultados de `aws/CHANGES.md` describen la preparacion
+historica del codigo: las pruebas posteriores en AWS se documentan aqui.
 
-## Publicacion manual por repositorio
+## Publicacion de esta documentacion en GitHub
 
-Todavia NO se hizo commit ni push. Revisar el informe, luego en PowerShell usar
-los bloques siguientes uno por uno. Antes de cada commit inspeccionar
-`git diff --cached` y confirmar que solo estan los archivos esperados. Las .env
-reales, cookies, llaves y certificados deben seguir ignorados. No usar git add -f.
+El checkout local NO equivale a verificar el contenido ya publicado en GitHub.
+Antes de entregar, comprobar rama, diff, archivos ignorados y estado remoto;
+no publicar contrasenas, `.env`, `.pem`, cookies de Erlang ni tokens de ngrok.
+
+Desde PowerShell en el repositorio `infra-barriodigital`:
 
 ```powershell
 cd 'G:\Desarrollo EP3-EP4\infra-barriodigital'
 git status --short
-git add -- .gitignore .gitattributes README.AWS.md aws
+git diff -- README.AWS.md
+git check-ignore aws/.env.apps aws/.env.node1 aws/.env.node2
+git ls-files -- '*.env' 'aws/.env.*' '*.pem' '.erlang.cookie'
+git add README.AWS.md
 git diff --cached --check
 git diff --cached --stat
-# Despues de revisar el diff completo:
-git commit -m "Prepare separate reproducible AWS deployment"
-git push origin main
-
-cd 'G:\Desarrollo EP3-EP4\ms-barriodigital-requests'
-git add -- .gitignore README.AWS.md barriodigitalrequests/.dockerignore barriodigitalrequests/.env.example barriodigitalrequests/src/main/resources/application.properties barriodigitalrequests/src/test/java/cl/barriodigital/barriodigitalrequests/config/RabbitAddressConfigurationTest.java
-git diff --cached --check
-git diff --cached
-git commit -m "Support private RabbitMQ node addresses for AWS"
-git push origin main
-
-cd 'G:\Desarrollo EP3-EP4\ms-barriodigital-notify'
-git add -- .gitignore README.AWS.md notify/.dockerignore notify/.env.example notify/Dockerfile notify/docker/HealthCheck.java notify/src/main/resources/application.properties notify/src/test/java/cl/barriodigital/notify/config/RabbitAddressConfigurationTest.java
-git diff --cached --check
-git diff --cached
-git commit -m "Prepare Notify connection and image health for AWS"
-git push origin main
-
-cd 'G:\Desarrollo EP3-EP4\ms-barriodigital-rabbitmq-admin'
-git add -- .gitignore README.AWS.md ms-barriodigital-rabbitmq-admin/.dockerignore
-git diff --cached --check
-git diff --cached
-git commit -m "Document internal AWS RabbitMQ Admin deployment"
-git push origin main
-
-cd 'G:\Desarrollo EP3-EP4\ms-barriodigital-bff'
-git add -- .gitignore README.AWS.md barriodigitalbff/.dockerignore
-git diff --cached --check
-git diff --cached
-git commit -m "Document existing secure BFF deployment for AWS"
-git push origin main
-
-cd 'G:\Desarrollo EP3-EP4\ms-barriodigital-catalog'
-git add -- .gitignore README.AWS.md barriodigitalcatalog/.dockerignore
-git diff --cached --check
-git diff --cached
-git commit -m "Document existing Catalog deployment for AWS"
-git push origin main
-
-cd 'G:\Desarrollo EP3-EP4\frontend-barriodigital'
-git add -- .gitignore .dockerignore README.AWS.md
-git diff --cached --check
-git diff --cached
-git commit -m "Document existing Amplify and MSAL configuration"
+git commit -m "Document AWS EP4 deployment and validation"
 git push origin main
 ```
 
-Cada push corresponde a SU remoto, no al de infra. Si aparecen cambios de otra
-persona o una rama distinta a main, detenerse y revisar antes de publicar.
-Actualizar una EC2 requiere ejecutar estos pasos manuales; no hay despliegue
-automatico ni credenciales AWS dentro de los repositorios.
+La salida de `git ls-files` debe inspeccionarse: las plantillas `.example`
+si pueden estar versionadas; archivos `.env` reales y secretos **no**.
+Si `git push` es rechazado, revisar cambios remotos antes de integrar. No usar
+`--force` para resolverlo ni asumir que los otros seis repositorios se actualizan
+con este push.
+
+## Documentacion relacionada
+
+- [`README.md`](README.md): infraestructura Compose local de EP1; no usar
+  `docker compose -f compose.yml up` como sustituto del despliegue AWS.
+- [`README-RabbitMQ.md`](README-RabbitMQ.md): topologia RabbitMQ local.
+- [`README-Docker.md`](README-Docker.md): notas Docker.
+- [`aws/CHANGES.md`](aws/CHANGES.md): informe original de preparacion y pruebas previas.
+- `README.AWS.md` en cada repositorio de microservicio: ajustes y variables propias.
