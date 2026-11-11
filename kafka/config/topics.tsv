@@ -1,0 +1,3 @@
+# topic retention.ms retention.bytes segment.bytes segment.ms
+bd.requests.events.v1 604800000 67108864 16777216 3600000
+bd.requests.analytics.v1 86400000 67108864 16777216 3600000

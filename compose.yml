@@ -2,7 +2,7 @@ services:
 
   frontend:
       build:
-        context: ../frontend-barriodigial
+        context: ../frontend-barriodigital
         dockerfile: Dockerfile
 
       image: barriodigital/frontend:ep2

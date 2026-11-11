@@ -1,0 +1,121 @@
+name: barriodigital-kafka
+
+x-runtime: &runtime
+  image: apache/kafka:3.9.1
+  restart: unless-stopped
+  stop_grace_period: 45s
+  networks: [kafka]
+  logging:
+    driver: json-file
+    options: {max-size: "5m", max-file: "2"}
+  # Override unused image-declared volumes to avoid anonymous volumes.
+  tmpfs:
+    - /etc/kafka/secrets:uid=1000,gid=1000,size=1m
+    - /mnt/shared/config:uid=1000,gid=1000,size=1m
+
+x-zookeeper: &zookeeper
+  <<: *runtime
+  mem_limit: 256m
+  cpus: 0.50
+  entrypoint: ["/bin/bash", "/workspace/scripts/start-zookeeper.sh"]
+  healthcheck:
+    test: ["CMD", "timeout", "5", "/bin/bash", "/workspace/scripts/health-zookeeper.sh"]
+    interval: 15s
+    timeout: 7s
+    retries: 10
+    start_period: 45s
+
+x-zk-env: &zk-env
+  KAFKA_HEAP_OPTS: "-Xms64m -Xmx128m"
+  KAFKA_OPTS: "-Dzookeeper.nio.numSelectorThreads=1 -Dzookeeper.nio.numWorkerThreads=2 -XX:MaxDirectMemorySize=32m"
+
+x-broker: &broker
+  <<: *runtime
+  mem_limit: 1024m
+  cpus: 1.0
+  entrypoint: ["/bin/bash", "/workspace/scripts/start-broker.sh"]
+  depends_on:
+    zookeeper-1: {condition: service_healthy}
+    zookeeper-2: {condition: service_healthy}
+    zookeeper-3: {condition: service_healthy}
+  healthcheck:
+    test: ["CMD", "/bin/bash", "/workspace/scripts/health-broker.sh"]
+    interval: 60s
+    timeout: 20s
+    retries: 5
+    start_period: 90s
+
+x-broker-env: &broker-env
+  KAFKA_HEAP_OPTS: "-Xms256m -Xmx384m"
+  KAFKA_OPTS: "-XX:MaxDirectMemorySize=128m"
+
+services:
+  zookeeper-1:
+    <<: *zookeeper
+    environment: {<<: *zk-env, ZK_ID: "1"}
+    volumes: ["zk-1-data:/var/lib/kafka/data", "./kafka:/workspace:ro"]
+  zookeeper-2:
+    <<: *zookeeper
+    environment: {<<: *zk-env, ZK_ID: "2"}
+    volumes: ["zk-2-data:/var/lib/kafka/data", "./kafka:/workspace:ro"]
+  zookeeper-3:
+    <<: *zookeeper
+    environment: {<<: *zk-env, ZK_ID: "3"}
+    volumes: ["zk-3-data:/var/lib/kafka/data", "./kafka:/workspace:ro"]
+
+  kafka-1:
+    <<: *broker
+    environment: {<<: *broker-env, BROKER_ID: "1", EXTERNAL_PORT: "19092"}
+    ports: ["127.0.0.1:19092:9093"]
+    volumes: ["kafka-1-data:/var/lib/kafka/data", "./kafka:/workspace:ro"]
+  kafka-2:
+    <<: *broker
+    environment: {<<: *broker-env, BROKER_ID: "2", EXTERNAL_PORT: "29092"}
+    ports: ["127.0.0.1:29092:9093"]
+    volumes: ["kafka-2-data:/var/lib/kafka/data", "./kafka:/workspace:ro"]
+  kafka-3:
+    <<: *broker
+    environment: {<<: *broker-env, BROKER_ID: "3", EXTERNAL_PORT: "39092"}
+    ports: ["127.0.0.1:39092:9093"]
+    volumes: ["kafka-3-data:/var/lib/kafka/data", "./kafka:/workspace:ro"]
+
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:v1.5.0
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.75
+    stop_grace_period: 30s
+    networks: [kafka]
+    ports: ["127.0.0.1:8090:8080"]
+    environment:
+      JAVA_OPTS: "-Xms128m -Xmx256m -XX:MaxDirectMemorySize=64m"
+      KAFKA_CLUSTERS_0_NAME: barriodigital-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      KAFKA_CLUSTERS_0_READONLY: "true"
+      DYNAMIC_CONFIG_ENABLED: "false"
+    depends_on:
+      kafka-1: {condition: service_healthy}
+      kafka-2: {condition: service_healthy}
+      kafka-3: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 90s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+networks:
+  kafka:
+    name: barriodigital-kafka-net
+    driver: bridge
+
+volumes:
+  zk-1-data:
+  zk-2-data:
+  zk-3-data:
+  kafka-1-data:
+  kafka-2-data:
+  kafka-3-data:

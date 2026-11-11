@@ -13,3 +13,4 @@
 secrets/
 __pycache__/
 aws/.validation-*/
+kafka/config/*.bak
