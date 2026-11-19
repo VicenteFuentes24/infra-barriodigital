@@ -128,6 +128,7 @@ services:
       DB_USERNAME: ${AUDIT_DB_USERNAME:?Define Audit database user}
       DB_PASSWORD: ${AUDIT_DB_PASSWORD:?Define Audit database password}
       AUDIT_MIGRATIONS_ENABLED: "false"
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${AUDIT_DB_POOL_SIZE:-2}
       AZURE_TENANT_ID: ${AZURE_TENANT_ID:?Define the existing Entra tenant}
       AZURE_API_AUDIENCE: ${AZURE_API_AUDIENCE:?Define the existing API audience}
       KAFKA_AUDIT_GROUP_ID: bd-audit-v1

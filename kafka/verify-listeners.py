@@ -21,7 +21,7 @@ def receive(sock, size):
 PORTS = (19092, 29092, 39092)
 
 
-def metadata(port, host="localhost"):
+def metadata(port, host):
     client = b"bd-infra-check"
     correlation = port
     request = struct.pack(">hhi", 3, 0, correlation)
@@ -57,7 +57,7 @@ def metadata(port, host="localhost"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("host", nargs="?", default="localhost")
+    parser.add_argument("host")
     args = parser.parse_args()
     for broker_port in PORTS:
         print(json.dumps(metadata(broker_port, args.host)))

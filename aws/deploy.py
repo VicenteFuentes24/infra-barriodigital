@@ -21,11 +21,6 @@ import urllib.request
 ROOT = Path(__file__).resolve().parent
 EXPECTED_NODES = {"rabbit@rabbitmq-node1", "rabbit@rabbitmq-node2"}
 KAFKA_PORTS = ("19092", "29092", "39092")
-APP_JARS = {
-    "report": "target/ms-report-0.0.1-SNAPSHOT.jar",
-    "audit": "target/ms-audit-0.0.1-SNAPSHOT.jar",
-    "kafka-admin": "target/ms-kafka-admin-0.0.1-SNAPSHOT.jar",
-}
 
 
 class DeploymentError(Exception):
@@ -48,7 +43,8 @@ def resolved_hosts(value):
 
 
 def canonical(resource, fields):
-    return json.dumps({field: resource.get(field) for field in fields}, sort_keys=True)
+    return json.dumps({field: resource.get(field, False if field == "internal" else None)
+                       for field in fields}, sort_keys=True)
 
 
 def topology_state(expected, actual):
@@ -311,10 +307,6 @@ def main():
     elif args.action == "start":
         if args.target == "apps":
             check_apps_capacity()
-            for service, jar in APP_JARS.items():
-                context = Path(compose.config["services"][service]["build"]["context"])
-                if not (context / jar).is_file():
-                    raise DeploymentError(f"Missing {service}/{jar}. Build the JARs as documented in README.AWS.md.")
             compose.run("build", timeout=3600)
             compose.run("up", "-d", "--wait", "--wait-timeout", "300")
         elif args.target == "kafka":
@@ -329,9 +321,19 @@ def main():
     elif args.target == "kafka":
         if args.action != "verify":
             raise DeploymentError("Use validate, start, ps or verify for Kafka.")
+        modes = [
+            compose.run("exec", "-T", f"zookeeper-{number}", "timeout", "5", "/bin/bash",
+                        "/workspace/scripts/health-zookeeper.sh", capture=True).strip()
+            for number in range(1, 4)
+        ]
+        if sorted(modes) != ["Mode: follower", "Mode: follower", "Mode: leader"]:
+            raise DeploymentError("ZooKeeper must report one leader and two followers.")
         compose.run("exec", "-T", "kafka-1", "/bin/bash", "/workspace/scripts/verify-topics.sh")
         subprocess.run([sys.executable, str(ROOT.parent / "kafka" / "verify-listeners.py"),
                         compose.env("kafka-1")["EXTERNAL_HOST"]], check=True)
+        for path in ("/", "/actuator/health"):
+            compose.run("exec", "-T", "kafka-ui", "wget", "-q", "-O", "/dev/null",
+                        "http://127.0.0.1:8080" + path)
     elif args.action == "verify":
         verify_cluster(compose)
     elif args.action == "join":

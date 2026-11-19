@@ -15,7 +15,7 @@ x-runtime: &runtime
 
 x-zookeeper: &zookeeper
   <<: *runtime
-  mem_limit: ${KAFKA_ZK_MEM_LIMIT:-256m}
+  mem_limit: ${KAFKA_ZK_MEM_LIMIT:-224m}
   cpus: 0.50
   entrypoint: ["/bin/bash", "/workspace/scripts/start-zookeeper.sh"]
   healthcheck:
@@ -26,12 +26,12 @@ x-zookeeper: &zookeeper
     start_period: 45s
 
 x-zk-env: &zk-env
-  KAFKA_HEAP_OPTS: "${KAFKA_ZK_HEAP_OPTS:--Xms64m -Xmx128m}"
+  KAFKA_HEAP_OPTS: "${KAFKA_ZK_HEAP_OPTS:--Xms64m -Xmx96m}"
   KAFKA_OPTS: "-Dzookeeper.nio.numSelectorThreads=1 -Dzookeeper.nio.numWorkerThreads=2 -XX:MaxDirectMemorySize=32m"
 
 x-broker: &broker
   <<: *runtime
-  mem_limit: ${KAFKA_BROKER_MEM_LIMIT:-1024m}
+  mem_limit: ${KAFKA_BROKER_MEM_LIMIT:-704m}
   cpus: 1.0
   entrypoint: ["/bin/bash", "/workspace/scripts/start-broker.sh"]
   depends_on:
@@ -46,9 +46,9 @@ x-broker: &broker
     start_period: 90s
 
 x-broker-env: &broker-env
-  KAFKA_HEAP_OPTS: "${KAFKA_BROKER_HEAP_OPTS:--Xms256m -Xmx384m}"
-  KAFKA_OPTS: "-XX:MaxDirectMemorySize=${KAFKA_BROKER_DIRECT_MEMORY:-128m}"
-  EXTERNAL_HOST: ${KAFKA_EXTERNAL_HOST:-localhost}
+  KAFKA_HEAP_OPTS: "${KAFKA_BROKER_HEAP_OPTS:--Xms128m -Xmx320m}"
+  KAFKA_OPTS: "-XX:MaxDirectMemorySize=${KAFKA_BROKER_DIRECT_MEMORY:-96m}"
+  EXTERNAL_HOST: ${KAFKA_EXTERNAL_HOST:?Define the private EC2 advertised address}
 
 services:
   zookeeper-1:
@@ -67,30 +67,30 @@ services:
   kafka-1:
     <<: *broker
     environment: {<<: *broker-env, BROKER_ID: "1", EXTERNAL_PORT: "19092"}
-    ports: ["${KAFKA_EXTERNAL_BIND:-127.0.0.1}:19092:9093"]
+    ports: ["${KAFKA_EXTERNAL_BIND:?Define the private EC2 bind address}:19092:9093"]
     volumes: ["kafka-1-data:/var/lib/kafka/data", "./kafka:/workspace:ro"]
   kafka-2:
     <<: *broker
     environment: {<<: *broker-env, BROKER_ID: "2", EXTERNAL_PORT: "29092"}
-    ports: ["${KAFKA_EXTERNAL_BIND:-127.0.0.1}:29092:9093"]
+    ports: ["${KAFKA_EXTERNAL_BIND:?Define the private EC2 bind address}:29092:9093"]
     volumes: ["kafka-2-data:/var/lib/kafka/data", "./kafka:/workspace:ro"]
   kafka-3:
     <<: *broker
     environment: {<<: *broker-env, BROKER_ID: "3", EXTERNAL_PORT: "39092"}
-    ports: ["${KAFKA_EXTERNAL_BIND:-127.0.0.1}:39092:9093"]
+    ports: ["${KAFKA_EXTERNAL_BIND:?Define the private EC2 bind address}:39092:9093"]
     volumes: ["kafka-3-data:/var/lib/kafka/data", "./kafka:/workspace:ro"]
 
   kafka-ui:
     image: ghcr.io/kafbat/kafka-ui:v1.5.0
     restart: unless-stopped
-    mem_limit: ${KAFKA_UI_MEM_LIMIT:-512m}
+    mem_limit: ${KAFKA_UI_MEM_LIMIT:-384m}
     cpus: 0.75
     stop_grace_period: 30s
     networks: [kafka]
     ports: ["127.0.0.1:8090:8080"]
     environment:
-      JAVA_OPTS: "${KAFKA_UI_JAVA_OPTS:--Xms128m -Xmx256m -XX:MaxDirectMemorySize=64m}"
-      KAFKA_CLUSTERS_0_NAME: ${KAFKA_UI_CLUSTER_NAME:-barriodigital-local}
+      JAVA_OPTS: "${KAFKA_UI_JAVA_OPTS:--Xms96m -Xmx192m -XX:MaxDirectMemorySize=48m}"
+      KAFKA_CLUSTERS_0_NAME: ${KAFKA_UI_CLUSTER_NAME:-barriodigital-aws}
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
       KAFKA_CLUSTERS_0_READONLY: "true"
       DYNAMIC_CONFIG_ENABLED: "false"

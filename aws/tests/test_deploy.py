@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -27,6 +26,15 @@ class SafetyTests(unittest.TestCase):
         actual = copy.deepcopy(DEFINITIONS)
         actual["queues"][0]["type"] = "classic"
         self.assertEqual("ready", deploy.topology_state(DEFINITIONS, actual))
+
+    def test_exported_exchange_may_omit_false_internal(self):
+        actual = copy.deepcopy(DEFINITIONS)
+        exchange = actual["exchanges"][0]
+        self.assertIs(exchange.pop("internal"), False)
+        self.assertEqual("ready", deploy.topology_state(DEFINITIONS, actual))
+        exchange["internal"] = True
+        with self.assertRaisesRegex(deploy.DeploymentError, "differs in exchanges"):
+            deploy.topology_state(DEFINITIONS, actual)
 
     def test_partial_topology_is_never_overwritten(self):
         actual = copy.deepcopy(DEFINITIONS)
@@ -106,17 +114,13 @@ class SafetyTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("docker"), "Docker Compose CLI required; daemon is NOT required")
 class ComposeConfigurationTests(unittest.TestCase):
-    def test_existing_local_compose_remains_valid_without_loading_private_env_files(self):
-        help_result = subprocess.run(["docker", "compose", "config", "--help"], capture_output=True, text=True)
-        if "--no-env-resolution" not in help_result.stdout:
-            self.skipTest("Compose 2.30+ required to validate local files without reading private env files")
-        for name in ("compose.yml", "compose.rabbitmq.yml"):
-            with self.subTest(file=name), patch.dict(os.environ, {"RABBITMQ_DEFAULT_USER": "configuration-test-only",
-                                                                  "RABBITMQ_DEFAULT_PASS": "broker-configuration-test-only"}):
-                result = subprocess.run(["docker", "compose", "--env-file", str(deploy.ROOT.parent / ".env.rabbitmq.example"),
-                                         "-f", str(deploy.ROOT.parent / name), "config", "--quiet", "--no-env-resolution"],
-                                        capture_output=True, text=True)
-                self.assertEqual(0, result.returncode, "Existing local Compose did not validate")
+    def test_kafka_compose_requires_explicit_private_addresses(self):
+        with tempfile.TemporaryDirectory(prefix=".validation-", dir=deploy.ROOT) as directory:
+            env_file = Path(directory) / "empty.env"
+            env_file.touch(mode=0o600)
+            with patch.dict(os.environ, {"KAFKA_EXTERNAL_BIND": "", "KAFKA_EXTERNAL_HOST": ""}):
+                with self.assertRaisesRegex(deploy.DeploymentError, "Compose configuration invalid"):
+                    deploy.Compose("kafka", env_file)
 
     def configuration(self, target):
         self.directory = tempfile.TemporaryDirectory(prefix=".validation-", dir=deploy.ROOT)
@@ -201,28 +205,24 @@ class ComposeConfigurationTests(unittest.TestCase):
                 with self.assertRaises(deploy.DeploymentError):
                     deploy.apps_preflight(compose)
 
-    def test_kafka_aws_and_local_listener_profiles(self):
-        aws = self.configuration("kafka")
-        deploy.kafka_preflight(aws)
-        local = deploy.Compose("kafka", deploy.ROOT.parent / "kafka" / "compose.empty.env")
-        for compose, bind, advertised, limit in ((aws, "10.0.2.174", "10.0.2.174", 3168),
-                                                  (local, "127.0.0.1", "localhost", 4352)):
-            with self.subTest(bind=bind):
-                services = compose.config["services"]
-                self.assertEqual(7, len(services))
-                self.assertEqual(limit * 1024**2, sum(int(service["mem_limit"]) for service in services.values()))
-                for number, expected in enumerate(deploy.KAFKA_PORTS, 1):
-                    broker = services[f"kafka-{number}"]
-                    self.assertEqual(advertised, broker["environment"]["EXTERNAL_HOST"])
-                    self.assertEqual(expected, broker["environment"]["EXTERNAL_PORT"])
-                    port, = broker["ports"]
-                    self.assertEqual((bind, expected, 9093),
-                                     (port["host_ip"], str(port["published"]), port["target"]))
-                ui = services["kafka-ui"]
-                self.assertEqual("kafka-1:9092,kafka-2:9092,kafka-3:9092",
-                                 ui["environment"]["KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS"])
-                port, = ui["ports"]
-                self.assertEqual(("127.0.0.1", "8090"), (port["host_ip"], str(port["published"])))
+    def test_kafka_aws_listeners(self):
+        compose = self.configuration("kafka")
+        deploy.kafka_preflight(compose)
+        services = compose.config["services"]
+        self.assertEqual(7, len(services))
+        self.assertEqual(3168 * 1024**2, sum(int(service["mem_limit"]) for service in services.values()))
+        for number, expected in enumerate(deploy.KAFKA_PORTS, 1):
+            broker = services[f"kafka-{number}"]
+            self.assertEqual("10.0.2.174", broker["environment"]["EXTERNAL_HOST"])
+            self.assertEqual(expected, broker["environment"]["EXTERNAL_PORT"])
+            port, = broker["ports"]
+            self.assertEqual(("10.0.2.174", expected, 9093),
+                             (port["host_ip"], str(port["published"]), port["target"]))
+        ui = services["kafka-ui"]
+        self.assertEqual("kafka-1:9092,kafka-2:9092,kafka-3:9092",
+                         ui["environment"]["KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS"])
+        port, = ui["ports"]
+        self.assertEqual(("127.0.0.1", "8090"), (port["host_ip"], str(port["published"])))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 # Validación ejecutada — Kafka local
 
+> Registro histórico de pruebas aisladas. Para operar en AWS, consultar [la guía vigente](../README-Kafka.md).
+
 Fecha: **7 de noviembre de 2026**, contexto del usuario America/Santiago.
 Workspace: `Desarrollo EP3-EP4`; cambios únicamente en `infra-barriodigital`.
 Este documento registra observaciones de esta ejecución, no garantiza el estado futuro.

@@ -14,3 +14,11 @@ secrets/
 __pycache__/
 aws/.validation-*/
 kafka/config/*.bak
+
+# Archivos privados de despliegue
+*.env
+passwords/
+credentials/
+.aws/
+ngrok.yml
+ngrok.yaml
