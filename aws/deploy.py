@@ -20,6 +20,12 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parent
 EXPECTED_NODES = {"rabbit@rabbitmq-node1", "rabbit@rabbitmq-node2"}
+KAFKA_PORTS = ("19092", "29092", "39092")
+APP_JARS = {
+    "report": "target/ms-report-0.0.1-SNAPSHOT.jar",
+    "audit": "target/ms-audit-0.0.1-SNAPSHOT.jar",
+    "kafka-admin": "target/ms-kafka-admin-0.0.1-SNAPSHOT.jar",
+}
 
 
 class DeploymentError(Exception):
@@ -30,7 +36,7 @@ def private_ipv4(value):
     address = ipaddress.ip_address(value)
     networks = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
     if address.version != 4 or not any(address in ipaddress.ip_network(n) for n in networks):
-        raise DeploymentError("Use only RFC1918 private IPv4 addresses for RabbitMQ.")
+        raise DeploymentError("Use only RFC1918 private IPv4 addresses.")
     return str(address)
 
 
@@ -98,10 +104,17 @@ class Compose:
             raise DeploymentError("Missing env file. Copy the corresponding .example and configure it locally.")
         if platform.system() == "Linux" and stat.S_IMODE(self.env_file.stat().st_mode) & 0o077:
             raise DeploymentError("Protect the env file with chmod 600 before continuing.")
-        files = ["compose.apps.yml"] if target == "apps" else ["compose.rabbitmq.common.yml", "compose.rabbitmq." + target + ".yml"]
-        self.command = ["docker", "compose", "--project-directory", str(ROOT), "--env-file", str(self.env_file)]
+        project = ROOT
+        if target == "kafka":
+            project = ROOT.parent
+            files = ["compose.kafka.yml"]
+        elif target == "apps":
+            files = ["compose.apps.yml"]
+        else:
+            files = ["compose.rabbitmq.common.yml", "compose.rabbitmq." + target + ".yml"]
+        self.command = ["docker", "compose", "--project-directory", str(project), "--env-file", str(self.env_file)]
         for file in files:
-            self.command.extend(["-f", str(ROOT / file)])
+            self.command.extend(["-f", str(project / file)])
         result = subprocess.run(self.command + ["config", "--format", "json"], capture_output=True, text=True)
         if result.returncode:
             raise DeploymentError("Compose configuration invalid: check required variables with 'docker compose ... config --quiet'.")
@@ -207,7 +220,7 @@ def node_preflight(compose):
 
 def apps_preflight(compose):
     services = compose.config["services"]
-    for service in ("requests", "catalog"):
+    for service in ("requests", "catalog", "report", "audit"):
         url = urllib.parse.urlsplit(compose.env(service)["DB_URL"].removeprefix("jdbc:"))
         mode = urllib.parse.parse_qs(url.query).get("sslmode", [""])[0]
         if mode not in ("require", "verify-ca", "verify-full"):
@@ -222,35 +235,62 @@ def apps_preflight(compose):
             raise DeploymentError("This AWS configuration expects private AMQP on port 5672.")
     if len(set(addresses)) != 2:
         raise DeploymentError("RabbitMQ addresses must be distinct.")
+    kafka_endpoints = [address.strip().rpartition(":") for address in
+                       compose.env("requests")["KAFKA_BOOTSTRAP_SERVERS"].split(",")]
+    if (sorted(port for _, _, port in kafka_endpoints) != list(KAFKA_PORTS)
+            or len({private_ipv4(host) for host, _, _ in kafka_endpoints}) != 1):
+        raise DeploymentError("Configure Kafka on one private host with ports 19092, 29092 and 39092.")
     admin = compose.env("rabbitmq-admin")
     password = admin["ADMIN_HTTP_PASSWORD"]
     if len(password) < 16 or len(password.encode()) > 72:
         raise DeploymentError("Internal HTTP password must have at least 16 characters and at most 72 UTF-8 bytes.")
+    kafka_password = compose.env("kafka-admin")["KAFKA_ADMIN_PASSWORD"]
+    if len(kafka_password) < 16 or len(kafka_password.encode()) > 72:
+        raise DeploymentError("Kafka Admin password must have at least 16 characters and at most 72 UTF-8 bytes.")
     if password in [compose.env(s)["RABBITMQ_PASSWORD"] for s in ("requests", "notify", "rabbitmq-admin")]:
         raise DeploymentError("Do not reuse broker credentials for the Admin HTTP account.")
     origin = urllib.parse.urlsplit(compose.env("bff")["FRONTEND_ORIGIN"])
     if origin.scheme != "https" or not origin.netloc or origin.path or origin.query or origin.fragment:
         raise DeploymentError("FRONTEND_ORIGIN must be the HTTPS Amplify origin, without a trailing slash or path.")
-    if any(services[s].get("ports") for s in ("requests", "catalog", "notify", "rabbitmq-admin")):
-        raise DeploymentError("Internal microservices must not publish host ports.")
+    for service, config in services.items():
+        for port in config.get("ports", []):
+            if service not in ("bff", "mailpit") or port.get("host_ip") != "127.0.0.1":
+                raise DeploymentError("Only BFF and Mailpit UI may publish ports, and only on loopback.")
     for service in services.values():
         build = service.get("build")
         if build and not (Path(build["context"]) / "Dockerfile").is_file():
             raise DeploymentError("A sibling repository or its Dockerfile is missing. Clone the documented paths first.")
 
 
+def kafka_preflight(compose):
+    services = compose.config["services"]
+    hosts = set()
+    for number, expected in enumerate(KAFKA_PORTS, 1):
+        service = services[f"kafka-{number}"]
+        host = service["environment"]["EXTERNAL_HOST"]
+        hosts.add(private_ipv4(host))
+        port, = service["ports"]
+        if (port.get("host_ip"), str(port["published"]), port["target"]) != (host, expected, 9093):
+            raise DeploymentError("Kafka must publish each EXTERNAL listener on its advertised private address.")
+    if len(hosts) != 1:
+        raise DeploymentError("All Kafka brokers must advertise the same private host.")
+    ui_port, = services["kafka-ui"]["ports"]
+    if (ui_port.get("host_ip"), str(ui_port["published"]), ui_port["target"]) != ("127.0.0.1", "8090", 8080):
+        raise DeploymentError("Kafka UI must publish only 127.0.0.1:8090.")
+
+
 def check_apps_capacity():
     with open("/proc/meminfo", encoding="ascii") as memory:
         total_kib = int(next(line.split()[1] for line in memory if line.startswith("MemTotal:")))
     if total_kib < 6 * 1024 * 1024:
-        raise DeploymentError("Five JVMs plus builds need an 8 GiB-class host (recommend t3.large). Historical t3.micro is insufficient. No AWS change made.")
+        raise DeploymentError("Eight JVMs plus builds need an 8 GiB-class host (t3.large).")
     if shutil.disk_usage(ROOT).free < 15 * 1024**3:
         raise DeploymentError("Keep at least 15 GiB free for serial Docker builds; recommend 30-40 GiB EBS or more after measuring artifacts.")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("target", choices=("node1", "node2", "apps"))
+    parser.add_argument("target", choices=("node1", "node2", "kafka", "apps"))
     parser.add_argument("action", choices=("validate", "start", "ps", "verify", "join", "topology"))
     parser.add_argument("--env-file")
     parser.add_argument("--confirm-empty-node2", action="store_true")
@@ -259,6 +299,8 @@ def main():
     compose = Compose(args.target, args.env_file or ROOT / (".env." + args.target))
     if args.target == "apps":
         apps_preflight(compose)
+    elif args.target == "kafka":
+        kafka_preflight(compose)
     if args.action == "validate":
         print("Compose configuration valid. No container started; no secret values printed.")
         return
@@ -269,14 +311,27 @@ def main():
     elif args.action == "start":
         if args.target == "apps":
             check_apps_capacity()
+            for service, jar in APP_JARS.items():
+                context = Path(compose.config["services"][service]["build"]["context"])
+                if not (context / jar).is_file():
+                    raise DeploymentError(f"Missing {service}/{jar}. Build the JARs as documented in README.AWS.md.")
             compose.run("build", timeout=3600)
             compose.run("up", "-d", "--wait", "--wait-timeout", "300")
+        elif args.target == "kafka":
+            compose.run("up", "-d", "--wait", "--wait-timeout", "300")
+            compose.run("exec", "-T", "kafka-1", "/bin/bash", "/workspace/scripts/init-topics.sh")
         else:
             node_preflight(compose)
             compose.run("up", "-d", "--wait", "--wait-timeout", "300", "rabbitmq")
         compose.run("ps")
     elif args.target == "apps":
         raise DeploymentError("Use validate, start or ps for applications.")
+    elif args.target == "kafka":
+        if args.action != "verify":
+            raise DeploymentError("Use validate, start, ps or verify for Kafka.")
+        compose.run("exec", "-T", "kafka-1", "/bin/bash", "/workspace/scripts/verify-topics.sh")
+        subprocess.run([sys.executable, str(ROOT.parent / "kafka" / "verify-listeners.py"),
+                        compose.env("kafka-1")["EXTERNAL_HOST"]], check=True)
     elif args.action == "verify":
         verify_cluster(compose)
     elif args.action == "join":

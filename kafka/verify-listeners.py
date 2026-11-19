@@ -1,7 +1,8 @@
-"""Read Kafka Metadata v0 from Windows, without installing a Kafka client.
+"""Read Kafka Metadata v0 without installing a Kafka client.
 
 No records, groups or configurations are modified. Kafka 3.9.1 supports v0.
 """
+import argparse
 import json
 import socket
 import struct
@@ -17,12 +18,15 @@ def receive(sock, size):
     return bytes(result)
 
 
-def metadata(port):
+PORTS = (19092, 29092, 39092)
+
+
+def metadata(port, host="localhost"):
     client = b"bd-infra-check"
     correlation = port
     request = struct.pack(">hhi", 3, 0, correlation)
     request += struct.pack(">h", len(client)) + client + struct.pack(">i", 0)
-    with socket.create_connection(("localhost", port), timeout=10) as sock:
+    with socket.create_connection((host, port), timeout=10) as sock:
         sock.sendall(struct.pack(">i", len(request)) + request)
         size = struct.unpack(">i", receive(sock, 4))[0]
         if not 8 <= size <= 10_000_000:
@@ -45,12 +49,15 @@ def metadata(port):
         if broker_id in brokers:
             raise RuntimeError("Duplicate broker ID")
         brokers[broker_id] = (host, advertised_port)
-    expected = {1: ("localhost", 19092), 2: ("localhost", 29092), 3: ("localhost", 39092)}
+    expected = {broker_id: (host, external_port) for broker_id, external_port in enumerate(PORTS, 1)}
     if brokers != expected:
         raise RuntimeError(f"Incorrect EXTERNAL advertised listeners: {brokers}")
-    return {"bootstrap": f"localhost:{port}", "brokers": brokers, "result": "PASS"}
+    return {"bootstrap": f"{host}:{port}", "brokers": brokers, "result": "PASS"}
 
 
 if __name__ == "__main__":
-    for broker_port in (19092, 29092, 39092):
-        print(json.dumps(metadata(broker_port)))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("host", nargs="?", default="localhost")
+    args = parser.parse_args()
+    for broker_port in PORTS:
+        print(json.dumps(metadata(broker_port, args.host)))

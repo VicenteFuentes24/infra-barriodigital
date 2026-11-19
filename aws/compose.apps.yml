@@ -13,6 +13,10 @@ x-runtime: &runtime
 x-jvm: &jvm
   JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60 -XX:InitialRAMPercentage=10 -XX:MaxDirectMemorySize=64m -XX:+ExitOnOutOfMemoryError"
 
+x-kafka-env: &kafka-env
+  <<: *jvm
+  KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:?Define the three private Kafka listener addresses}
+
 services:
   requests:
     <<: *runtime
@@ -20,7 +24,7 @@ services:
     image: ${REQUESTS_IMAGE:-barriodigital/requests:aws-local}
     mem_limit: 768m
     environment:
-      <<: *jvm
+      <<: *kafka-env
       SERVER_PORT: "8081"
       DB_URL: ${REQUESTS_DB_URL:?Define Requests Supabase JDBC URL with SSL}
       DB_USERNAME: ${REQUESTS_DB_USERNAME:?Define Requests database user}
@@ -32,6 +36,8 @@ services:
       RABBITMQ_PASSWORD: ${REQUESTS_RABBITMQ_PASSWORD:?Define Requests broker password}
       RABBITMQ_VIRTUAL_HOST: barriodigital
       RABBITMQ_HEALTH_ENABLED: "true"
+      KAFKA_PUBLISHER_ENABLED: "true"
+      CATALOG_SERVICE_URL: http://catalog:8082
     expose: ["8081"]
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8081/actuator/health"]
@@ -74,11 +80,9 @@ services:
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:?Define the HTTPS Amplify origin without trailing slash}
       REQUESTS_SERVICE_URL: http://requests:8081
       CATALOG_SERVICE_URL: http://catalog:8082
-      REPORT_SERVICE_URL: ${REPORT_SERVICE_URL:-http://report:8083}
-      AUDIT_SERVICE_URL: ${AUDIT_SERVICE_URL:-http://audit:8084}
-    # Only the BFF has an application-facing host port. Confirm API Gateway integration first.
-    # Default loopback is intentional. Set the EC2 private bind IP for the existing public HTTP integration.
-    ports: ["${BFF_BIND_ADDRESS:-127.0.0.1}:${BFF_PORT:-8080}:8080"]
+      REPORT_SERVICE_URL: http://report:8083
+      AUDIT_SERVICE_URL: http://audit:8084
+    ports: ["127.0.0.1:8080:8080"]
     depends_on:
       requests: {condition: service_healthy}
       catalog: {condition: service_healthy}
@@ -88,6 +92,52 @@ services:
       timeout: 10s
       retries: 5
       start_period: 90s
+
+  report:
+    <<: *runtime
+    build: ../../ms-report
+    image: ${REPORT_IMAGE:-barriodigital/report:aws-local}
+    mem_limit: 768m
+    environment:
+      <<: *kafka-env
+      SERVER_PORT: "8083"
+      SERVER_ADDRESS: 0.0.0.0
+      DB_URL: ${REPORT_DB_URL:?Define Report Supabase JDBC URL with SSL}
+      DB_USERNAME: ${REPORT_DB_USERNAME:?Define Report database user}
+      DB_PASSWORD: ${REPORT_DB_PASSWORD:?Define Report database password}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-3}
+      SPRING_FLYWAY_ENABLED: "false"
+      KAFKA_CONSUMER_GROUP: bd-report-v1
+    expose: ["8083"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8083/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  audit:
+    <<: *runtime
+    build: ../../ms-audit
+    image: ${AUDIT_IMAGE:-barriodigital/audit:aws-local}
+    mem_limit: 640m
+    environment:
+      <<: *kafka-env
+      SERVER_PORT: "8084"
+      DB_URL: ${AUDIT_DB_URL:?Define Audit Supabase JDBC URL with SSL}
+      DB_USERNAME: ${AUDIT_DB_USERNAME:?Define Audit database user}
+      DB_PASSWORD: ${AUDIT_DB_PASSWORD:?Define Audit database password}
+      AUDIT_MIGRATIONS_ENABLED: "false"
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:?Define the existing Entra tenant}
+      AZURE_API_AUDIENCE: ${AZURE_API_AUDIENCE:?Define the existing API audience}
+      KAFKA_AUDIT_GROUP_ID: bd-audit-v1
+    expose: ["8084"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8084/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
 
   notify:
     <<: *runtime
@@ -136,6 +186,26 @@ services:
       ADMIN_HTTP_USERNAME: ${ADMIN_HTTP_USERNAME:?Define a separate internal HTTP account}
       ADMIN_HTTP_PASSWORD: ${ADMIN_HTTP_PASSWORD:?Define a separate HTTP password of at least 16 characters}
     expose: ["8088"]
+
+  kafka-admin:
+    <<: *runtime
+    build: ../../ms-kafka-admin
+    image: ${KAFKA_ADMIN_IMAGE:-barriodigital/kafka-admin:aws-local}
+    mem_limit: 512m
+    environment:
+      <<: *kafka-env
+      SERVER_PORT: "8089"
+      SERVER_ADDRESS: 0.0.0.0
+      KAFKA_ADMIN_USERNAME: ${KAFKA_ADMIN_USERNAME:?Define an internal Kafka Admin username}
+      KAFKA_ADMIN_PASSWORD: ${KAFKA_ADMIN_PASSWORD:?Define an internal Kafka Admin password}
+      KAFKA_ADMIN_WRITES_ENABLED: "false"
+    expose: ["8089"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8089/actuator/health/readiness"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
 
   mailpit:
     <<: *runtime
